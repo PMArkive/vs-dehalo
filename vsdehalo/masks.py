@@ -1,23 +1,25 @@
 from typing import Any
-import vapoursynth as vs
+
+from vsexprtools import norm_expr
 from vsmask.edge import TriticalTCanny
-from vsrgtools import box_blur
-from vsrgtools.util import PlanesT, iterate, norm_expr_planes, wmean_matrix
-from vsutil import disallow_variable_format, disallow_variable_resolution
+from vsrgtools.util import wmean_matrix
+from vstools import PlanesT, core, disallow_variable_format, disallow_variable_resolution, iterate, vs
 
 __all__ = [
+    # Masking kernels
     'TritSigmaTCanny',
-    # morpho functions
-    'dilation', 'erosion', 'closing', 'opening', 'gradient', 'top_hat', 'black_hat'
+    # Morpho functions
+    'dilation', 'erosion', 'closing', 'opening', 'gradient',
+    'top_hat', 'black_hat', 'outer_hat', 'inner_hat',
+    # General functions
+    'grow_mask'
 ]
-
-core = vs.core
 
 
 class TritSigmaTCanny(TriticalTCanny):
-    sigma: float = 0
+    sigma: float = 0.0
 
-    def __init__(self, sigma: float = 0) -> None:
+    def __init__(self, sigma: float = 0.0) -> None:
         super().__init__()
         self.sigma = sigma
 
@@ -76,7 +78,7 @@ def gradient(src: vs.VideoNode, radius: int = 1, planes: PlanesT = None, **kwarg
     eroded = erosion(src, radius, planes)
     dilated = dilation(src, radius, planes, **kwargs)
 
-    return core.std.Expr([dilated, eroded], norm_expr_planes(src, 'x y -', planes))
+    return norm_expr([dilated, eroded], 'x y -', planes)
 
 
 @disallow_variable_format
@@ -87,7 +89,7 @@ def top_hat(src: vs.VideoNode, radius: int = 1, planes: PlanesT = None, **kwargs
 
     opened = opening(src, radius, planes, **kwargs)
 
-    return core.std.Expr([src, opened], norm_expr_planes(src, 'x y -', planes))
+    return norm_expr([src, opened], 'x y -', planes)
 
 
 @disallow_variable_format
@@ -98,7 +100,7 @@ def black_hat(src: vs.VideoNode, radius: int = 1, planes: PlanesT = None, **kwar
 
     closed = closing(src, radius, planes, **kwargs)
 
-    return core.std.Expr([closed, src], norm_expr_planes(src, 'x y -', planes))
+    return norm_expr([closed, src], 'x y -', planes)
 
 
 @disallow_variable_format
@@ -109,7 +111,7 @@ def outer_hat(src: vs.VideoNode, radius: int = 1, planes: PlanesT = None, **kwar
 
     dilated = dilation(src, radius, planes, **kwargs)
 
-    return core.std.Expr([dilated, src], norm_expr_planes(src, 'x y -', planes))
+    return norm_expr([dilated, src], 'x y -', planes)
 
 
 @disallow_variable_format
@@ -120,7 +122,7 @@ def inner_hat(src: vs.VideoNode, radius: int = 1, planes: PlanesT = None, **kwar
 
     eroded = erosion(src, radius, planes, **kwargs)
 
-    return core.std.Expr([eroded, src], norm_expr_planes(src, 'x y -', planes))
+    return norm_expr([eroded, src], 'x y -', planes)
 
 
 @disallow_variable_format
@@ -133,7 +135,7 @@ def grow_mask(
     dilated = dilation(closed, **kwargs)
     outer = outer_hat(dilated, radius, **kwargs)
 
-    blurred = box_blur(outer, wmean_matrix, planes)
+    blurred = outer.std.Convolution(wmean_matrix, planes=planes)
 
     if multiply != 1.0:
         return blurred.std.Expr(f'x {multiply} *')

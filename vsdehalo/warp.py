@@ -1,20 +1,19 @@
 from __future__ import annotations
 
 from math import sqrt
+from typing import Sequence
 
-import vapoursynth as vs
-from vsmask.better_vsutil import join, split
 from vsmask.edge import EdgeDetect, PrewittStd
-from vsrgtools import box_blur, min_blur, removegrain, repair
-from vsrgtools.util import PlanesT, cround, mean_matrix, normalise_planes, wmean_matrix
-from vsutil import Dither
-from vsutil import Range as CRange
-from vsutil import depth as vdepth
-from vsutil import disallow_variable_format, disallow_variable_resolution, get_peak_value, get_y, scale_value
+from vsrgtools import min_blur, removegrain, repair
+from vsrgtools.util import mean_matrix, wmean_matrix
+from vstools import (
+    ColorRange, DitherType, PlanesT, core, cround, disallow_variable_format, disallow_variable_resolution, depth_func,
+    get_peak_value, get_y, join, normalize_planes, padder, scale_value, split, vs
+)
 
-from .utils import pad_reflect
-
-core = vs.core
+__all__ = [
+    'edge_cleaner', 'YAHR'
+]
 
 
 @disallow_variable_format
@@ -29,7 +28,7 @@ def edge_cleaner(
     if clip.format.color_family not in {vs.YUV, vs.GRAY}:
         raise ValueError('edge_cleaner: format not supported')
 
-    planes = normalise_planes(clip, planes)
+    planes = normalize_planes(clip, planes)
 
     work_clip, *chroma = split(clip) if planes == [0] else (clip, )
     assert work_clip.format
@@ -41,19 +40,19 @@ def edge_cleaner(
     if smode:
         strength += 4
 
-    padded = pad_reflect(work_clip, 6, 6, 6, 6)
+    padded = padder(work_clip, 6, 6, 6, 6)
 
     # warpsf is way too slow
     if is_float:
-        padded = vdepth(padded, 16, vs.INTEGER, dither_type=Dither.NONE)
+        padded = depth_func(padded, 16, vs.INTEGER, dither_type=DitherType.NONE)
 
     warped = padded.warp.AWarpSharp2(blur=1, depth=cround(strength / 2), planes=planes)
 
     warped = warped.std.Crop(6, 6, 6, 6)
 
     if is_float:
-        warped = vdepth(
-            warped, work_clip.format.bits_per_sample, work_clip.format.sample_type, dither_type=Dither.NONE
+        warped = depth_func(
+            warped, work_clip.format.bits_per_sample, work_clip.format.sample_type, dither_type=DitherType.NONE
         )
 
     warped = repair(warped, work_clip, [
@@ -63,9 +62,9 @@ def edge_cleaner(
     y_mask = get_y(work_clip)
 
     mask = edgemask.edgemask(y_mask).std.Expr(
-        f'x {scale_value(4, 8, bits, CRange.FULL)} < 0 x {scale_value(32, 8, bits, CRange.FULL)} > {peak} x ? ?'
+        f'x {scale_value(4, 8, bits, ColorRange.FULL)} < 0 x {scale_value(32, 8, bits, ColorRange.FULL)} > {peak} x ? ?'
     ).std.InvertMask()
-    mask = box_blur(mask, mean_matrix)
+    mask = mask.std.Convolution(mean_matrix)
 
     final = work_clip.std.MaskedMerge(warped, mask)
 
@@ -78,11 +77,11 @@ def edge_cleaner(
         diff = y_mask.std.MakeDiff(clean)
 
         mask = edgemask.edgemask(
-            diff.std.Levels(scale_value(40, 8, bits, CRange.FULL), scale_value(168, 8, bits, CRange.FULL), 0.35)
+            diff.std.Levels(scale_value(40, 8, bits, ColorRange.FULL), scale_value(168, 8, bits, ColorRange.FULL), 0.35)
         )
-        mask = removegrain(mask, 7).std.Expr(
-            f'x {scale_value(4, 8, bits, CRange.FULL)} < 0 x {scale_value(16, 8, bits, CRange.FULL)} > {peak} x ? ?'
-        )
+        sc4 = scale_value(4, 8, bits, ColorRange.FULL)
+        sc16 = scale_value(16, 8, bits, ColorRange.FULL)
+        mask = removegrain(mask, 7).std.Expr(f'x {sc4} < 0 x {sc16} > {peak} x ? ?')
 
         final = final.std.MaskedMerge(work_clip, mask)
 
@@ -94,37 +93,39 @@ def edge_cleaner(
 
 @disallow_variable_format
 @disallow_variable_resolution
-def YAHR(clip: vs.VideoNode, blur: int = 2, depth: int = 32, expand: float = 5, planes: PlanesT = 0) -> vs.VideoNode:
+def YAHR(
+    clip: vs.VideoNode, blur: int = 2, depth: int | Sequence[int] = 32, expand: float = 5, planes: PlanesT = 0
+) -> vs.VideoNode:
     assert clip.format
 
     if clip.format.color_family not in {vs.YUV, vs.GRAY}:
         raise ValueError('YAHR: format not supported')
 
-    planes = normalise_planes(clip, planes)
+    planes = normalize_planes(clip, planes)
 
     work_clip, *chroma = split(clip) if planes == [0] else (clip, )
     assert work_clip.format
 
     is_float = work_clip.format.sample_type == vs.FLOAT
 
-    padded = pad_reflect(work_clip, 6, 6, 6, 6)
+    padded = padder(work_clip, 6, 6, 6, 6)
 
     # warpsf is way too slow
     if is_float:
-        padded = vdepth(padded, 16, vs.INTEGER, dither_type=Dither.NONE)
+        padded = depth_func(padded, 16, vs.INTEGER, dither_type=DitherType.NONE)
 
     warped = padded.warp.AWarpSharp2(blur=blur, depth=depth, planes=planes)
 
     warped = warped.std.Crop(6, 6, 6, 6)
 
     if is_float:
-        warped = vdepth(
-            warped, work_clip.format.bits_per_sample, work_clip.format.sample_type, dither_type=Dither.NONE
+        warped = depth_func(
+            warped, work_clip.format.bits_per_sample, work_clip.format.sample_type, dither_type=DitherType.NONE
         )
 
     blur_diff, blur_warped_diff = [
         c.std.MakeDiff(
-            box_blur(min_blur(c, 2, planes), wmean_matrix, planes), planes
+            min_blur(c, 2, planes).std.Convolution(wmean_matrix, planes=planes), planes
         ) for c in (work_clip, warped)
     ]
 
@@ -143,7 +144,7 @@ def YAHR(clip: vs.VideoNode, blur: int = 2, depth: int = 32, expand: float = 5, 
 
     mask1 = vEdge.tcanny.TCanny(sqrt(expand * 2), mode=-1)
 
-    mask2 = box_blur(vEdge, wmean_matrix).std.Invert()
+    mask2 = vEdge.std.Convolution(wmean_matrix).std.Invert()
 
     mask = core.std.Expr([mask1, mask2], 'x 16 * y min 0 max 1 min' if is_float else 'x 16 * y min')
 
